@@ -1,0 +1,8 @@
+[package]
+name = "coreutils"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.19", features = ["derive"] }
+time = { version = "0.3.36", features = ["std", "parsing", "formatting", "macros", "local-offset"] }
