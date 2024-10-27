@@ -1,7 +1,8 @@
 use lazy_static::lazy_static;
 use std::cmp::Ordering;
 use std::fmt::Display;
-use std::fs::Metadata;
+use std::fs::{self, Metadata};
+use std::ops::Shr;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -59,6 +60,19 @@ impl Display for ChMod {
         write!(
             f,
             "{}",
+            match self.0.shr(12) {
+                0o4_u32 => "d",
+                0o6 => "b",
+                0o2 => "c",
+                0o12 => "l",
+                0o1 => "p",
+                0o14 => "s",
+                _ => "-",
+            }
+        )?;
+        write!(
+            f,
+            "{}",
             format!("{:o}", self.0 & 0o777)
                 .chars()
                 .map(|c| match c {
@@ -93,7 +107,10 @@ impl<'a> LSFile<'a> {
     }
 
     fn load_metadata(&mut self) {
-        self.metadata = self.path.metadata().ok()
+        self.metadata = match self.path.is_symlink() {
+            true => self.path.symlink_metadata().ok(),
+            false => self.path.metadata().ok(),
+        }
     }
 
     fn is_dir(&self) -> bool {
@@ -101,9 +118,16 @@ impl<'a> LSFile<'a> {
     }
 
     fn file_name(&self) -> String {
-        self.path
+        let file_name = self
+            .path
             .file_name()
-            .map_or("".to_string(), |f| f.to_string_lossy().to_string())
+            .map_or("".to_string(), |f| f.to_string_lossy().to_string());
+        if self.path.is_symlink() {
+            return fs::read_link(self.path.clone()).map_or(file_name.clone(), |f| {
+                format!("{} -> {}", file_name.clone(), f.to_string_lossy())
+            });
+        }
+        file_name
     }
 
     fn mode(&self) -> Option<ChMod> {
@@ -224,38 +248,37 @@ impl<'a> From<LSFile<'a>> for TableRow<String, 7> {
     }
 }
 
-fn main() {
-    let cli = Cli::parse();
-    let mut paths = cli
-        .path
-        .clone()
-        .unwrap_or(vec![Path::new(".").to_path_buf()])
-        .into_iter()
-        .flat_map(|p| {
-            if p.is_dir() {
-                let paths = p
-                    .read_dir()
-                    .expect("Could not read dir")
-                    .filter_map(|entry| entry.ok())
-                    .map(|entry| entry.path())
-                    .collect::<Vec<PathBuf>>();
-                return paths;
-            }
-            vec![p]
-        })
-        .filter(|path| {
-            cli.all
-                || !path
-                    .file_name()
-                    .is_some_and(|n| n.as_bytes().starts_with(b"."))
-        })
-        .filter(|path| !cli.ignore_backups || !path.to_string_lossy().ends_with("~"))
-        // TODO: figure out how the ls version works, this doesn't quite match
-        .filter(|path| !cli.directory || path.is_dir())
-        .map(|p| LSFile::new(p, &cli))
-        .collect::<Vec<LSFile>>();
+fn output_path(path: PathBuf, cli: &Cli, index: usize) {
+    let mut paths = match path.is_dir() {
+        true => path
+            .read_dir()
+            .expect("Could not read dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .collect::<Vec<PathBuf>>(),
+        false => vec![path.clone()],
+    }
+    .into_iter()
+    .filter(|path| {
+        cli.all
+            || !path
+                .file_name()
+                .is_some_and(|n| n.as_bytes().starts_with(b"."))
+    })
+    .filter(|path| !cli.ignore_backups || !path.to_string_lossy().ends_with("~"))
+    // TODO: figure out how the ls version works, this doesn't quite match
+    .filter(|path| !cli.directory || path.is_dir())
+    .map(|p| LSFile::new(p, cli))
+    .collect::<Vec<LSFile>>();
     paths.sort();
     if cli.long {
+        if path.is_dir() {
+            if index > 0 {
+                println!();
+            }
+            println!("{}", path.to_string_lossy());
+            println!("total {}", path.metadata().map_or(0, |m| m.blksize()));
+        }
         let table = Table::new(
             paths
                 .into_iter()
@@ -280,8 +303,16 @@ fn main() {
             path.load_metadata();
             print!("{} ", path.file_name());
         }
-    }
-    if !cli.long {
         println!()
     }
+}
+
+fn main() {
+    let cli = Cli::parse();
+    cli.path
+        .clone()
+        .unwrap_or(vec![Path::new(".").to_path_buf()])
+        .into_iter()
+        .enumerate()
+        .for_each(|(index, p)| output_path(p, &cli, index));
 }
