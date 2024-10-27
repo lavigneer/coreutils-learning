@@ -13,6 +13,7 @@ use humansize::{FormatSizeOptions, BINARY};
 use time::macros::format_description;
 use time::UtcOffset;
 use time::{parsing::Parsed, OffsetDateTime};
+use users::{get_group_by_gid, get_user_by_uid};
 
 const UTC_OFFSET: LazyCell<UtcOffset> =
     LazyCell::new(|| UtcOffset::current_local_offset().unwrap());
@@ -212,8 +213,16 @@ impl<'a> Into<TableRow<String, 7>> for LSFile<'a> {
         return TableRow::new([
             format!("{}", self.mode().unwrap()),
             self.nlink().unwrap().to_string(),
-            self.uid().unwrap().to_string(),
-            self.gid().unwrap().to_string(),
+            get_user_by_uid(self.uid().unwrap())
+                .unwrap()
+                .name()
+                .to_string_lossy()
+                .to_string(),
+            get_group_by_gid(self.gid().unwrap())
+                .unwrap()
+                .name()
+                .to_string_lossy()
+                .to_string(),
             size,
             self.modified()
                 .unwrap()
