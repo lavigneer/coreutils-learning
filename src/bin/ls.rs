@@ -39,6 +39,10 @@ struct Cli {
     #[arg(short, long)]
     human_readable: bool,
 
+    /// In directories, ignore files that end with ‘~’
+    #[arg(short = 'B', long)]
+    ignore_backups: bool,
+
     /// group directories before files
     #[arg(long)]
     group_directories_first: bool,
@@ -236,11 +240,12 @@ fn main() {
             vec![p]
         })
         .filter(|path| {
-            return cli.all
+            cli.all
                 || !path
                     .file_name()
-                    .is_some_and(|n| n.as_bytes().starts_with(b"."));
+                    .is_some_and(|n| n.as_bytes().starts_with(b"."))
         })
+        .filter(|path| !cli.ignore_backups || !path.to_string_lossy().ends_with("~"))
         .map(|p| LSFile::new(p, &cli))
         .collect::<Vec<LSFile>>();
     paths.sort();
