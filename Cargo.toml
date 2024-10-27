@@ -8,3 +8,4 @@ humansize = "2.0.0"
 clap = { version = "4.5.19", features = ["derive"] }
 time = { version = "0.3.36", features = ["std", "parsing", "formatting", "macros", "local-offset"] }
 users = "0.11"
+lazy_static = "1.5.0"

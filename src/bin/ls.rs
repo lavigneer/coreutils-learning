@@ -1,4 +1,4 @@
-use std::cell::LazyCell;
+use lazy_static::lazy_static;
 use std::cmp::Ordering;
 use std::fmt::Display;
 use std::fs::Metadata;
@@ -8,15 +8,16 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use clap::{ArgAction, Parser};
-use coreutils::table::table::{ColumnAlignment, Table, TableColumn, TableRow};
+use coreutils::table::{ColumnAlignment, Table, TableColumn, TableRow};
 use humansize::{FormatSizeOptions, BINARY};
 use time::macros::format_description;
 use time::UtcOffset;
 use time::{parsing::Parsed, OffsetDateTime};
 use users::{get_group_by_gid, get_user_by_uid};
 
-const UTC_OFFSET: LazyCell<UtcOffset> =
-    LazyCell::new(|| UtcOffset::current_local_offset().unwrap());
+lazy_static! {
+    static ref UTC_OFFSET: UtcOffset = UtcOffset::current_local_offset().unwrap();
+}
 
 #[derive(Parser)]
 #[command(version, about = "list directory contents", long_about = None, disable_help_flag(true))]
@@ -98,38 +99,25 @@ impl<'a> LSFile<'a> {
     }
 
     fn mode(&self) -> Option<ChMod> {
-        match &self.metadata {
-            None => None,
-            Some(metadata) => Some(ChMod(metadata.mode())),
-        }
+        self.metadata
+            .as_ref()
+            .map(|metadata| ChMod(metadata.mode()))
     }
 
     fn uid(&self) -> Option<u32> {
-        match &self.metadata {
-            None => None,
-            Some(metadata) => Some(metadata.uid()),
-        }
+        self.metadata.as_ref().map(|metadata| metadata.uid())
     }
 
     fn gid(&self) -> Option<u32> {
-        match &self.metadata {
-            None => None,
-            Some(metadata) => Some(metadata.gid()),
-        }
+        self.metadata.as_ref().map(|metadata| metadata.gid())
     }
 
     fn nlink(&self) -> Option<u64> {
-        match &self.metadata {
-            None => None,
-            Some(metadata) => Some(metadata.nlink()),
-        }
+        self.metadata.as_ref().map(|metadata| metadata.nlink())
     }
 
     fn size(&self) -> Option<u64> {
-        match &self.metadata {
-            None => None,
-            Some(metadata) => Some(metadata.size()),
-        }
+        self.metadata.as_ref().map(|metadata| metadata.size())
     }
 
     fn modified(&self) -> Option<OffsetDateTime> {
@@ -169,14 +157,7 @@ impl<'a> PartialEq for LSFile<'a> {
 
 impl<'a> PartialOrd for LSFile<'a> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        if self.cli.group_directories_first {
-            if self.is_dir() && !other.is_dir() {
-                return Some(Ordering::Less);
-            } else if other.is_dir() && !self.is_dir() {
-                return Some(Ordering::Greater);
-            }
-        }
-        return self.file_name().partial_cmp(&other.file_name());
+        Some(self.cmp(other))
     }
 }
 
@@ -189,15 +170,15 @@ impl<'a> Ord for LSFile<'a> {
                 return Ordering::Greater;
             }
         }
-        return self.file_name().cmp(&other.file_name());
+        self.file_name().cmp(&other.file_name())
     }
 }
 
-impl<'a> Into<TableRow<String, 7>> for LSFile<'a> {
-    fn into(self) -> TableRow<String, 7> {
-        let size = match self.size() {
+impl<'a> From<LSFile<'a>> for TableRow<String, 7> {
+    fn from(val: LSFile<'a>) -> Self {
+        let size = match val.size() {
             None => "0".to_string(),
-            Some(size) => match self.cli.human_readable {
+            Some(size) => match val.cli.human_readable {
                 true => {
                     let custom_options = FormatSizeOptions::from(BINARY)
                         .decimal_places(1)
@@ -211,26 +192,26 @@ impl<'a> Into<TableRow<String, 7>> for LSFile<'a> {
             },
         };
         return TableRow::new([
-            format!("{}", self.mode().unwrap()),
-            self.nlink().unwrap().to_string(),
-            get_user_by_uid(self.uid().unwrap())
+            format!("{}", val.mode().unwrap()),
+            val.nlink().unwrap().to_string(),
+            get_user_by_uid(val.uid().unwrap())
                 .unwrap()
                 .name()
                 .to_string_lossy()
                 .to_string(),
-            get_group_by_gid(self.gid().unwrap())
+            get_group_by_gid(val.gid().unwrap())
                 .unwrap()
                 .name()
                 .to_string_lossy()
                 .to_string(),
             size,
-            self.modified()
+            val.modified()
                 .unwrap()
                 .format(format_description!(
                     "[month repr:short] [day padding:zero] [hour]:[minute]"
                 ))
                 .unwrap(),
-            self.file_name(),
+            val.file_name(),
         ]);
     }
 }
@@ -252,7 +233,7 @@ fn main() {
                     .collect::<Vec<PathBuf>>();
                 return paths;
             }
-            return vec![p];
+            vec![p]
         })
         .filter(|path| {
             return cli.all
@@ -290,6 +271,6 @@ fn main() {
         }
     }
     if !cli.long {
-        println!("")
+        println!()
     }
 }
