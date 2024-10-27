@@ -43,6 +43,10 @@ struct Cli {
     #[arg(short = 'B', long)]
     ignore_backups: bool,
 
+    /// List just the names of directories
+    #[arg(short, long)]
+    directory: bool,
+
     /// group directories before files
     #[arg(long)]
     group_directories_first: bool,
@@ -246,6 +250,8 @@ fn main() {
                     .is_some_and(|n| n.as_bytes().starts_with(b"."))
         })
         .filter(|path| !cli.ignore_backups || !path.to_string_lossy().ends_with("~"))
+        // TODO: figure out how the ls version works, this doesn't quite match
+        .filter(|path| !cli.directory || path.is_dir())
         .map(|p| LSFile::new(p, &cli))
         .collect::<Vec<LSFile>>();
     paths.sort();
