@@ -6,7 +6,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use clap::Parser;
+use clap::{ArgAction, Parser};
+use coreutils::table::table::{ColumnAlignment, Table, TableColumn, TableRow};
+use humansize::{FormatSizeOptions, BINARY};
 use time::macros::format_description;
 use time::UtcOffset;
 use time::{parsing::Parsed, OffsetDateTime};
@@ -15,9 +17,12 @@ const UTC_OFFSET: LazyCell<UtcOffset> =
     LazyCell::new(|| UtcOffset::current_local_offset().unwrap());
 
 #[derive(Parser)]
-#[command(version, about = "list directory contents", long_about = None)]
+#[command(version, about = "list directory contents", long_about = None, disable_help_flag(true))]
 struct Cli {
     path: Option<Vec<PathBuf>>,
+
+    #[arg(short = '?', long, action(ArgAction::Help))]
+    help: Option<bool>,
 
     /// do not ignore entries starting with .
     #[arg(short, long)]
@@ -26,6 +31,35 @@ struct Cli {
     /// use a long listing format
     #[arg(short)]
     long: bool,
+
+    /// make the output human readable
+    #[arg(short, long)]
+    human_readable: bool,
+}
+
+struct ChMod(u32);
+
+impl Display for ChMod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            format!("{:o}", self.0 & 0o777)
+                .chars()
+                .map(|c| match c {
+                    '1' => "--x",
+                    '2' => "-w-",
+                    '3' => "-wx",
+                    '4' => "r--",
+                    '5' => "r-x",
+                    '6' => "rw-",
+                    '7' => "rwx",
+                    _ => "---",
+                })
+                .collect::<Vec<&str>>()
+                .join("")
+        )
+    }
 }
 
 struct LSFile<'a> {
@@ -51,22 +85,37 @@ impl<'a> LSFile<'a> {
         self.path.file_name()
     }
 
-    fn mode(&self) -> Option<u32> {
+    fn file_name_string(&self) -> String {
+        self.path
+            .file_name()
+            .map_or("".to_string(), |f| f.to_string_lossy().to_string())
+    }
+
+    fn mode(&self) -> Option<ChMod> {
         match &self.metadata {
             None => None,
-            Some(metadata) => Some(metadata.mode()),
+            Some(metadata) => Some(ChMod(metadata.mode())),
         }
     }
+
     fn uid(&self) -> Option<u32> {
         match &self.metadata {
             None => None,
             Some(metadata) => Some(metadata.uid()),
         }
     }
+
     fn gid(&self) -> Option<u32> {
         match &self.metadata {
             None => None,
             Some(metadata) => Some(metadata.gid()),
+        }
+    }
+
+    fn nlink(&self) -> Option<u64> {
+        match &self.metadata {
+            None => None,
+            Some(metadata) => Some(metadata.nlink()),
         }
     }
 
@@ -104,32 +153,37 @@ impl<'a> LSFile<'a> {
     }
 }
 
-impl<'a> Display for LSFile<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.path.file_name() {
-            None => Ok(()),
-            Some(file_name) => {
-                if self.cli.long {
-                    writeln!(
-                        f,
-                        "{}\t{}\t{}\t{}\t{}\t{}",
-                        self.mode().unwrap(),
-                        self.uid().unwrap(),
-                        self.gid().unwrap(),
-                        self.size().unwrap(),
-                        self.modified()
-                            .unwrap()
-                            .format(format_description!(
-                                "[month repr:short] [day padding:zero] [hour]:[minute]"
-                            ))
-                            .unwrap(),
-                        file_name.to_string_lossy()
-                    )
-                } else {
-                    write!(f, "{}  ", file_name.to_string_lossy())
+impl<'a> Into<TableRow<String, 7>> for LSFile<'a> {
+    fn into(self) -> TableRow<String, 7> {
+        let size = match self.size() {
+            None => "0".to_string(),
+            Some(size) => match self.cli.human_readable {
+                true => {
+                    let custom_options = FormatSizeOptions::from(BINARY)
+                        .decimal_places(1)
+                        .space_after_value(false)
+                        .units(humansize::Kilo::Decimal);
+                    let mut size = humansize::format_size(size, custom_options);
+                    size.pop();
+                    size.to_uppercase()
                 }
-            }
-        }
+                false => size.to_string(),
+            },
+        };
+        return TableRow::new([
+            format!("{}", self.mode().unwrap()),
+            self.nlink().unwrap().to_string(),
+            self.uid().unwrap().to_string(),
+            self.gid().unwrap().to_string(),
+            size,
+            self.modified()
+                .unwrap()
+                .format(format_description!(
+                    "[month repr:short] [day padding:zero] [hour]:[minute]"
+                ))
+                .unwrap(),
+            self.file_name_string(),
+        ]);
     }
 }
 
@@ -161,9 +215,31 @@ fn main() {
         .map(|p| LSFile::new(p, &cli))
         .collect::<Vec<LSFile>>();
     paths.sort_unstable_by_key(|entry| entry.file_name().unwrap().to_os_string());
-    for mut path in paths {
-        path.load_metadata();
-        print!("{}", path);
+    if cli.long {
+        let table = Table::new(
+            paths
+                .into_iter()
+                .map(|mut p| {
+                    p.load_metadata();
+                    p.into()
+                })
+                .collect::<Vec<TableRow<String, 7>>>(),
+            [
+                TableColumn::new(ColumnAlignment::Left),
+                TableColumn::new(ColumnAlignment::Left),
+                TableColumn::new(ColumnAlignment::Left),
+                TableColumn::new(ColumnAlignment::Left),
+                TableColumn::new(ColumnAlignment::Right),
+                TableColumn::new(ColumnAlignment::Left),
+                TableColumn::new(ColumnAlignment::Left),
+            ],
+        );
+        print!("{}", table)
+    } else {
+        for mut path in paths {
+            path.load_metadata();
+            print!("{} ", path.file_name_string());
+        }
     }
     if !cli.long {
         println!("")
