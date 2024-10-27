@@ -1,4 +1,5 @@
 use std::cell::LazyCell;
+use std::cmp::Ordering;
 use std::fmt::Display;
 use std::fs::Metadata;
 use std::os::unix::ffi::OsStrExt;
@@ -35,6 +36,10 @@ struct Cli {
     /// make the output human readable
     #[arg(short, long)]
     human_readable: bool,
+
+    /// group directories before files
+    #[arg(long)]
+    group_directories_first: bool,
 }
 
 struct ChMod(u32);
@@ -81,11 +86,11 @@ impl<'a> LSFile<'a> {
         self.metadata = self.path.metadata().ok()
     }
 
-    fn file_name(&self) -> Option<&std::ffi::OsStr> {
-        self.path.file_name()
+    fn is_dir(&self) -> bool {
+        self.path.is_dir()
     }
 
-    fn file_name_string(&self) -> String {
+    fn file_name(&self) -> String {
         self.path
             .file_name()
             .map_or("".to_string(), |f| f.to_string_lossy().to_string())
@@ -153,6 +158,40 @@ impl<'a> LSFile<'a> {
     }
 }
 
+impl<'a> Eq for LSFile<'a> {}
+
+impl<'a> PartialEq for LSFile<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+    }
+}
+
+impl<'a> PartialOrd for LSFile<'a> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        if self.cli.group_directories_first {
+            if self.is_dir() && !other.is_dir() {
+                return Some(Ordering::Less);
+            } else if other.is_dir() && !self.is_dir() {
+                return Some(Ordering::Greater);
+            }
+        }
+        return self.file_name().partial_cmp(&other.file_name());
+    }
+}
+
+impl<'a> Ord for LSFile<'a> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self.cli.group_directories_first {
+            if self.is_dir() && !other.is_dir() {
+                return Ordering::Less;
+            } else if other.is_dir() && !self.is_dir() {
+                return Ordering::Greater;
+            }
+        }
+        return self.file_name().cmp(&other.file_name());
+    }
+}
+
 impl<'a> Into<TableRow<String, 7>> for LSFile<'a> {
     fn into(self) -> TableRow<String, 7> {
         let size = match self.size() {
@@ -182,7 +221,7 @@ impl<'a> Into<TableRow<String, 7>> for LSFile<'a> {
                     "[month repr:short] [day padding:zero] [hour]:[minute]"
                 ))
                 .unwrap(),
-            self.file_name_string(),
+            self.file_name(),
         ]);
     }
 }
@@ -214,7 +253,7 @@ fn main() {
         })
         .map(|p| LSFile::new(p, &cli))
         .collect::<Vec<LSFile>>();
-    paths.sort_unstable_by_key(|entry| entry.file_name().unwrap().to_os_string());
+    paths.sort();
     if cli.long {
         let table = Table::new(
             paths
@@ -238,7 +277,7 @@ fn main() {
     } else {
         for mut path in paths {
             path.load_metadata();
-            print!("{} ", path.file_name_string());
+            print!("{} ", path.file_name());
         }
     }
     if !cli.long {
